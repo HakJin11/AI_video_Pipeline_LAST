@@ -30,11 +30,18 @@ class UdpError(Exception):
 class UdpClient:
     """Request/answer over UDP with resends, and file download by chunks."""
 
-    def __init__(self, host: str, port: int, password: str):
+    def __init__(self, host: str, port: int, password: str, bind_ip: str = ""):
         self.addr = (socket.gethostbyname(host.strip()), int(port))
         self.password = password
+        self.bind_ip = bind_ip  # send from this local IP (a PC with several network cards; tests)
         self._id = random.randrange(1, 2 ** 30)
         self._lock = threading.Lock()
+
+    def _socket(self) -> socket.socket:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if self.bind_ip:
+            s.bind((self.bind_ip, 0))
+        return s
 
     def _next_id(self) -> int:
         with self._lock:
@@ -45,7 +52,7 @@ class UdpClient:
         """Send, resend every `resend` s until an answer with our id arrives or `wait` s pass."""
         rid = self._next_id()
         data = proto.encode({"v": proto.VERSION, "id": rid, "cmd": cmd, "pw": self.password, **args})
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s = self._socket()
         try:
             end = time.time() + wait
             while time.time() < end:
@@ -73,7 +80,7 @@ class UdpClient:
         info = self.request("file_info", wait=180, resend=5, run_id=run_id, kind=kind)
         n, size, csize = info["chunks"], info["size"], info["chunk_size"]
         parts: dict[int, bytes] = {}
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s = self._socket()
         s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)
         window, stalls = 64, 0
         try:

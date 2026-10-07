@@ -223,6 +223,8 @@ class Server:
 
     def _run(self, m: dict, cmd: str, key: tuple, addr) -> None:
         rid = m.get("id")
+        if cmd != "status":  # status comes every few seconds while a video is made
+            log(f"{addr[0]}:{addr[1]} -> {cmd} {({k: v for k, v in m.items() if k not in ('v', 'id', 'cmd', 'pw')})}")
         fn = getattr(self, f"cmd_{cmd}", None)
         try:
             if not fn:
