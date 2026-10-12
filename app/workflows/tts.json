@@ -1,0 +1,44 @@
+{
+  "62": {
+    "inputs": {
+      "audio": "PLACEHOLDER_REFERENCE_VOICE.wav"
+    },
+    "class_type": "LoadAudio",
+    "_meta": {
+      "title": "오디오 로드"
+    }
+  },
+  "59": {
+    "inputs": {
+      "target_text": "PLACEHOLDER_TEXT",
+      "model_size": "1.7B",
+      "language": "Korean",
+      "reference_text": "",
+      "x_vector_only": false,
+      "unload_models": true,
+      "seed": 0,
+      "reference_audio": [
+        "62",
+        0
+      ]
+    },
+    "class_type": "AILab_Qwen3TTSVoiceClone",
+    "_meta": {
+      "title": "Voice Clone (QwenTTS)"
+    }
+  },
+  "58": {
+    "inputs": {
+      "filename_prefix": "audio/ComfyUI",
+      "quality": "V0",
+      "audio": [
+        "59",
+        0
+      ]
+    },
+    "class_type": "SaveAudioMP3",
+    "_meta": {
+      "title": "오디오 저장 (MP3)"
+    }
+  }
+}

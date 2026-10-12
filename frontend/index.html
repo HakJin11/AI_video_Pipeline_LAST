@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI 영상 합성 파이프라인</title>
+<link rel="stylesheet" href="/styles.css?v=45" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="brand" id="brand-home" title="처음부터 새로 시작">
+      <span class="brand-mark">🎬</span>
+      <span>
+        <span class="brand-name">유튜브 따라하기</span><br />
+        <span class="brand-sub">처음부터 새로 시작</span>
+      </span>
+    </button>
+    <div class="mode-switch" id="mode-switch">
+      <button data-mode="follow">▶ 유튜브 따라하기</button>
+      <button data-mode="admin" id="mode-admin" hidden>🔧 관리자</button>
+    </div>
+    <nav class="stepper" id="stepper" hidden>
+      <button class="step" data-step="genre"><span class="step-num">1</span>장르</button>
+      <span class="step-sep"></span>
+      <button class="step" data-step="cast"><span class="step-num">2</span>인물</button>
+      <span class="step-sep"></span>
+      <button class="step" data-step="config"><span class="step-num">3</span>구성</button>
+      <span class="step-sep"></span>
+      <button class="step" data-step="script"><span class="step-num">4</span>대본</button>
+      <span class="step-sep"></span>
+      <button class="step" data-step="produce"><span class="step-num">5</span>완성</button>
+    </nav>
+    <div class="health">
+      <span>ComfyUI <i id="dot-comfy" class="dot"></i></span>
+      <span>Ollama <i id="dot-ollama" class="dot"></i></span>
+    </div>
+  </div>
+</header>
+
+<main>
+<div id="follow">
+  <button id="tr-open" class="tr-fab" title="한국어 ↔ 영어 번역기">🌐 번역기</button>
+  <div id="tr-panel" class="tr-panel" hidden>
+    <div class="tr-head"><b>🌐 프롬프트 번역기</b><span class="mini-note">한국어 ↔ 영어</span>
+      <button id="tr-close" class="btn btn-sm">닫기</button></div>
+    <div class="tr-dir">
+      <button class="chip active" data-tr="en">한국어 → 영어</button>
+      <button class="chip" data-tr="ko">영어 → 한국어</button>
+    </div>
+    <textarea id="tr-in" rows="5" placeholder="예: 그녀는 카메라를 보지 않고 오른쪽 친구를 보며 놀란 표정을 짓는다"></textarea>
+    <div class="btn-row" style="margin-top:6px">
+      <button id="tr-go" class="btn btn-primary btn-sm">번역하기</button>
+      <button id="tr-swap" class="btn btn-sm">⇅ 결과를 입력으로</button>
+      <button id="tr-copy" class="btn btn-sm">결과 복사</button>
+      <span id="tr-status" class="mini-note"></span>
+    </div>
+    <textarea id="tr-out" rows="6" readonly placeholder="번역 결과"></textarea>
+  </div>
+  <div class="phase-head">
+    <h1>유튜브 따라하기</h1>
+    <p>원본 영상을 1~2초 컷으로 나누고, 컷마다 같은 구도·의상·대사로 AI 영상을 새로 만들며 프롬프트를 배웁니다.</p>
+  </div>
+
+  <div id="f-start">
+    <div class="rule-card">
+      <b>모든 컷에 들어가는 기본 규칙</b>
+      <ul>
+        <li><b>얼굴은 거의 정면, 눈은 옆 친구</b> — 입이 잘 보여야 립싱크가 맞아요 (고개를 옆으로 돌리면 입이 가려져 안 움직였어요)</li>
+        <li><b>한 컷 = 한 사람</b> — 화면에 말하는 사람만 있어서 입 모양(립싱크)이 대사에 맞습니다</li>
+        <li><b>1~2초씩</b> — 원본의 컷 전환 지점에서 자르고, 긴 샷은 2초 이하로 다시 나눕니다</li>
+      </ul>
+    </div>
+    <div id="f-viewer-start">
+      <div class="section-label">영상 선택하기</div>
+      <div id="f-catalog" class="f-catalog"></div>
+      <details class="f-runs-wrap">
+        <summary id="f-runs-sum">내가 만든 따라하기 보기</summary>
+        <div id="f-runs" class="import-list"></div>
+      </details>
+    </div>
+
+    <div id="f-admin-start" hidden>
+      <div class="section-label">관리자 · 유튜브 주소로 가져오기</div>
+      <form id="f-url-form" class="f-new">
+        <label style="grid-column: span 2">유튜브 주소<input type="url" id="f-url-input" placeholder="https://www.youtube.com/watch?v=..." required /></label>
+        <label>제목 (비우면 영상 제목)<input type="text" id="f-url-title" /></label>
+        <label>시작 (초)<input type="number" id="f-url-start" value="0" min="0" step="0.1" /></label>
+        <label>길이 (초)<input type="number" id="f-url-length" value="10" min="2" max="30" /></label>
+        <label>등장인물 수<input type="number" id="f-url-cast" value="3" min="1" max="4" /></label>
+        <button type="submit" class="btn btn-primary">가져와서 컷 나누기 →</button>
+      </form>
+      <div class="section-label">관리자 · 파일로 올리기</div>
+      <form id="f-new" class="f-new">
+        <label>영상 파일 (mp4)<input type="file" id="f-video" accept="video/*" required /></label>
+        <label>제목<input type="text" id="f-title" placeholder="예: 썸사친에 보드게임" /></label>
+        <label>유튜브 주소 (참고용)<input type="url" id="f-url" placeholder="https://youtube.com/..." /></label>
+        <label>시작 (초)<input type="number" id="f-start-sec" value="0" min="0" step="0.1" /></label>
+        <label>길이 (초)<input type="number" id="f-length" value="10" min="2" max="30" step="1" /></label>
+        <label>등장인물 수<input type="number" id="f-cast-count" value="3" min="1" max="4" /></label>
+        <button type="submit" class="btn btn-primary">컷 나누기 →</button>
+      </form>
+      <div id="f-new-progress" class="progress on" hidden><span class="spinner"></span><span>영상 가져와서 자르는 중…</span></div>
+      <div class="section-label">관리자 · 프리셋 (공개하면 영상 선택하기에 보임)</div>
+      <div id="f-list" class="import-list"></div>
+    </div>
+  </div>
+
+  <div id="f-work" hidden>
+    <div class="f-quick">
+      <button id="f-lesson-open" class="btn btn-sm">📖 프롬프트 해설 보기</button>
+      <button id="f-builder-open" class="btn btn-sm">🛠 프롬프트 만들기</button>
+      <span class="mini-note">해설은 오른쪽에 잠깐 열렸다 닫혀요</span>
+    </div>
+    <div id="f-builder" class="f-builder" hidden>
+      <div class="f-builder-grid">
+        <label class="f-label">누가<input type="text" id="fb-who" placeholder="예: 검은 티를 입은 20대 남자" /></label>
+        <label class="f-label">어디<input type="text" id="fb-place" placeholder="예: 벽돌 벽 보드게임 카페" /></label>
+        <label class="f-label">어디를 보며<select id="fb-look"><option value="right">화면 오른쪽 상대</option><option value="left">화면 왼쪽 상대</option><option value="camera">카메라(비추천)</option></select></label>
+        <label class="f-label">말투<select id="fb-tone"></select></label>
+        <label class="f-label">움직임<select id="fb-motion"></select></label>
+        <label class="f-label">행동·표정<input type="text" id="fb-action" placeholder="예: 눈을 굴리며 한숨" /></label>
+      </div>
+      <div class="btn-row" style="margin-top:8px">
+        <button id="fb-make" class="btn btn-primary btn-sm">프롬프트 만들기</button>
+        <button id="fb-copy" class="btn btn-sm">복사</button>
+        <button id="fb-ko" class="btn btn-sm">한국어로 보기</button>
+      </div>
+      <textarea id="fb-out" rows="5" readonly placeholder="여기에 영어 프롬프트가 만들어집니다"></textarea>
+    </div>
+    <div class="f-top">
+      <div class="f-ref">
+        <video id="f-ref-video" controls playsinline></video>
+        <div class="mini-note" id="f-ref-meta"></div>
+      </div>
+      <div class="f-setting">
+        <label class="f-label f-admin-only">배경 (모든 컷 공통 · 프롬프트 "배경" 문장)
+          <textarea id="f-setting" rows="4"></textarea></label>
+        <label class="f-label f-admin-only">배경 사진 (선택 · 조명/분위기 참고)
+          <select id="f-bg"></select></label>
+        <label class="f-check"><input type="checkbox" id="f-fast" /> ⚡ 빠른 렌더 (미리보기 화질, 컷당 ~35초)</label>
+        <label class="f-check"><input type="checkbox" id="f-usestill" /> 인물 사진 건너뛰고 원본 사진으로 바로 만들기 (배경·의상 적용 안 됨)</label>
+        <div id="f-admin-publish" class="f-publish" hidden>
+          <label class="f-check"><input type="checkbox" id="f-published" /> <b>영상 선택하기에 공개</b></label>
+          <label class="f-label">소개 문구<input type="text" id="f-description" placeholder="예: 숏박스 스타일 보드게임 카페 티키타카" /></label>
+          <button type="button" id="f-translate" class="btn btn-sm">대사 영어 · 프롬프트 한국어 번역 채우기</button>
+          <div class="f-extend-row">
+            <button type="button" id="f-rescan" class="btn btn-sm">원본 다시 분석 (인원·구도·카메라)</button>
+            <button type="button" id="f-mimic" class="btn btn-sm">원본 연기 따라하기 (표정·행동·시선)</button>
+          </div>
+          <div class="f-extend-row"><select id="f-extend-len"><option value="20">20초</option><option value="30" selected>30초</option></select>
+            <button type="button" id="f-extend" class="btn btn-sm">원본 길이 늘리기</button>
+            <span class="mini-note">사용자가 10/20/30초 중 고를 수 있게</span></div>
+        </div>
+        <div class="btn-row" style="margin-top:8px">
+          <button id="f-close" class="btn btn-sm">← 프로젝트 목록</button>
+          <button id="f-save-preset" class="btn btn-sm btn-primary">현재 설정을 재현 기준으로 저장</button>
+          <button id="f-delete" class="btn btn-sm btn-danger">프로젝트 삭제</button>
+        </div>
+      </div>
+    </div>
+
+
+    <!-- 배경: 왼쪽 = 지금 배경 + 저장된 배경, 오른쪽 = 쓰는 법·예시 + 입력 + 만들기 (옆으로 놓아 덜 내려가게) -->
+    <div id="f-bgpanel" class="f-bgpanel">
+      <div class="section-label">배경 <span class="mini-note">예시를 고르거나 직접 써서 바꿀 수 있어요 · 바꾸면 인물 사진과 영상을 새로 만들어요</span></div>
+      <div class="f-bg-cols">
+        <div class="f-bg-left">
+          <div id="f-bg-current" class="f-bg-current"></div>
+          <div class="f-bg-sub">저장된 배경 (누르면 이 배경으로 바뀌어요)</div>
+          <div id="f-bg-examples" class="f-bg-examples"></div>
+        </div>
+        <div class="f-bg-right">
+          <div class="f-bg-head">✍ 이렇게 써 보세요 <span class="mini-note">예시를 누르면 아래 칸에 들어가요 · 고쳐서 써도 돼요</span></div>
+          <div id="f-bg-samples" class="f-bg-samples"></div>
+          <textarea id="f-bg-text" rows="3" placeholder="대충 써도 돼요 — AI가 정리해서 그려요. 예: 비오는 밤 편의점 좀 어둡게 / 한강 노을"></textarea>
+          <div id="f-bg-refined" class="f-refined" hidden></div>
+          <div class="btn-row">
+            <button type="button" id="f-bg-refine" class="btn">✨ AI로 정리하기</button>
+            <button type="button" id="f-bg-gen" class="btn btn-primary">🎨 배경 사진 만들기 (무료 · 이 PC에서)</button>
+            <button type="button" id="f-bg-orig" class="btn btn-sm">원본 배경으로 되돌리기</button>
+          </div>
+          <div id="f-bg-status" class="mini-note"></div>
+          <div class="f-bg-sub">배경 프롬프트 쓰는 요령</div>
+          <div id="f-bg-tips"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-label">등장인물 — 얼굴 · 목소리 고르기</div>
+    <div id="f-cast" class="f-cast"></div>
+    <p class="hint" id="f-cast-hint"></p>
+
+    <div id="f-estimate" class="f-estimate" hidden></div>
+    <div id="f-prefetch" class="f-prefetch" hidden></div>
+    <div id="f-progress" class="f-progress" hidden></div>
+
+    <div class="section-label">컷 타임라인
+      <button type="button" id="f-suggest-all" class="btn btn-sm btn-primary" style="margin-left:10px">✨ 모든 컷 행동 AI로 정하기</button>
+      <span id="f-suggest-status" class="mini-note"></span></div>
+    <div id="f-strip" class="f-strip"></div>
+
+    <div id="f-editor" class="f-editor"></div>
+
+    <div class="section-label">완성</div>
+    <div class="btn-row" style="margin-top:0">
+      <button id="f-render-all" class="btn">남은 컷 전부 만들기</button>
+      <button id="f-assemble" class="btn btn-primary">컷 합치기 + 원본 비교 영상</button>
+      <span id="f-assemble-status" class="mini-note"></span>
+    </div>
+    <div id="f-time" class="f-timebox"></div>
+    <div id="f-final" class="f-final"></div>
+  </div>
+
+  <aside id="f-lesson-panel" class="f-side" hidden>
+    <div class="f-side-head"><b>프롬프트 해설</b>
+      <button id="f-lesson-close" class="btn btn-sm">닫기</button></div>
+    <div id="f-lesson-body"></div>
+  </aside>
+</div>
+<!-- 스토리 빌더: 2026-10-07 사용자 요청으로 화면에서 뺌 (app.js 가 요소를 찾으므로 DOM 은 남겨 둠) -->
+<div class="wiz" id="wiz" hidden>
+
+  <!-- ===== STEP: 인물 ===== -->
+  <section class="wiz-step" data-step="cast">
+    <div class="phase-head">
+      <h1>누가 나오나요?</h1>
+      <p>영상에 나올 두 사람을 고르세요. 모든 씬에서 같은 얼굴로 유지됩니다.</p>
+    </div>
+    <div id="cast-status" class="summary"></div>
+    <details class="panel">
+      <summary>+ 사진 업로드로 인물 추가</summary>
+      <div class="panel-body">
+        <form id="char-upload-form" class="upload-form">
+          <input type="file" id="char-upload-image" accept="image/*" required />
+          <input type="text" id="char-upload-name" placeholder="이름" required />
+          <input type="text" id="char-upload-desc" placeholder="설명 (영문 권장, 예: a young man in a gray hoodie)" required />
+          <select id="char-upload-gender">
+            <option value="unspecified">성별 미지정</option>
+            <option value="male">남성</option>
+            <option value="female">여성</option>
+          </select>
+          <button type="submit" class="btn btn-primary btn-sm">추가</button>
+        </form>
+        <p class="hint">공유 폴더에서 가져오기: <code>...\Comfy-Desktop\ComfyUI-Shared\input</code></p>
+        <div id="import-character-list" class="import-list"></div>
+      </div>
+    </details>
+    <div id="cast-grid" class="tile-grid"></div>
+    <div class="wiz-nav">
+      <button class="btn btn-back" data-go="template">← 이전</button>
+      <button id="cast-next" class="btn btn-primary">다음 →</button>
+    </div>
+  </section>
+
+  <!-- ===== STEP: 장르 ===== -->
+  <section class="wiz-step" data-step="genre">
+    <div class="phase-head">
+      <h1>어떤 이야기인가요?</h1>
+      <p>장르를 고르면 그 톤에 맞는 대본을 씁니다.</p>
+    </div>
+    <div id="genre-grid" class="genre-grid"></div>
+    <div class="wiz-nav">
+      <span></span>
+      <span class="mini-note">장르를 고르면 다음으로 넘어갑니다</span>
+    </div>
+  </section>
+
+  <!-- ===== STEP: 템플릿 ===== -->
+  <section class="wiz-step" data-step="template">
+    <div class="phase-head">
+      <h1 id="template-title">상황을 골라주세요</h1>
+      <p>고른 상황으로 시작해서 gemma가 나머지를 채웁니다. 직접 정하고 싶으면 맨 아래를 고르세요.</p>
+    </div>
+    <div id="template-grid" class="template-grid"></div>
+    <div class="wiz-nav">
+      <button class="btn btn-back" data-go="genre">← 이전</button>
+      <span></span>
+    </div>
+  </section>
+
+  <!-- ===== STEP: 구성 ===== -->
+  <section class="wiz-step" data-step="config">
+    <div class="phase-head">
+      <h1>몇 개의 씬으로?</h1>
+      <p>씬 개수와 총 길이를 정하고, 씬에 쓸 배경을 순서대로 고르세요.</p>
+    </div>
+    <div id="config-status" class="summary"></div>
+    <div class="config-row"><span>씬 개수</span><div id="scene-count-chips" class="chip-row"></div></div>
+    <div class="config-row"><span>총 길이</span><div id="total-sec-chips" class="chip-row"></div></div>
+    <div class="config-row"><span>렌더 품질</span><div id="quality-chips" class="chip-row"></div></div>
+    <p class="hint" id="quality-hint"></p>
+
+    <div class="section-label">배경 <span class="mini-note">(고른 순서 = 씬 순서)</span></div>
+    <details class="panel">
+      <summary>+ 공유 폴더에서 배경 가져오기</summary>
+      <div class="panel-body">
+        <p class="hint"><code>...\Comfy-Desktop\ComfyUI-Shared\input</code></p>
+        <div id="import-background-list" class="import-list"></div>
+      </div>
+    </details>
+    <div id="bg-grid" class="tile-grid"></div>
+    <div class="wiz-nav">
+      <button class="btn btn-back" data-go="cast">← 이전</button>
+      <button id="config-next" class="btn btn-primary">다음 →</button>
+    </div>
+  </section>
+
+  <!-- ===== STEP: 캐스팅 ===== -->
+  <section class="wiz-step" data-step="casting">
+    <div class="phase-head">
+      <h1>목소리를 정해주세요</h1>
+      <p>두 인물이 어떤 목소리로 말할지 고릅니다 (Qwen3 TTS). 전 씬 동일하게 유지됩니다.</p>
+    </div>
+    <div id="casting-status" class="summary"></div>
+
+    <details class="panel">
+      <summary>+ 목소리 뱅크 — 녹음 / 업로드 / 가져오기</summary>
+      <div class="panel-body">
+        <div class="record-row">
+          <button type="button" id="btn-record-start" class="btn btn-sm">🎤 녹음 시작</button>
+          <button type="button" id="btn-record-stop" class="btn btn-sm" disabled>■ 정지</button>
+          <span id="record-status" class="mini-note"></span>
+        </div>
+        <audio id="voice-record-preview" controls style="display:none"></audio>
+        <form id="voice-upload-form" class="upload-form">
+          <input type="file" id="voice-upload-audio" accept="audio/*" />
+          <input type="text" id="voice-upload-name" placeholder="목소리 이름" required />
+          <select id="voice-upload-gender">
+            <option value="unspecified">성별 미지정</option>
+            <option value="male">남성</option>
+            <option value="female">여성</option>
+          </select>
+          <button type="submit" class="btn btn-primary btn-sm">추가</button>
+        </form>
+        <p class="hint">공유 폴더에서 가져오기:</p>
+        <div id="import-voice-list" class="import-list"></div>
+      </div>
+    </details>
+
+    <div class="voice-pickers">
+      <div>
+        <div class="picker-label" id="voice1-label">인물1 목소리</div>
+        <div id="pick-voice1" class="pick-grid"></div>
+      </div>
+      <div>
+        <div class="picker-label" id="voice2-label">인물2 목소리</div>
+        <div id="pick-voice2" class="pick-grid"></div>
+      </div>
+    </div>
+
+    <div class="config-row" style="margin-top:16px">
+      <span>키워드</span>
+      <input id="story-keyword" class="field-input" style="flex:1" type="text" placeholder="선택 — 이야기에 넣고 싶은 한 마디 (예: 우산, 편지, 3년 후)" />
+    </div>
+
+    <div class="wiz-nav">
+      <button class="btn btn-back" data-go="config">← 이전</button>
+      <button id="btn-create-story" class="btn btn-primary">스토리 대본 만들기</button>
+    </div>
+    <div id="script-progress" class="progress"><span class="spinner"></span><span></span></div>
+  </section>
+
+  <!-- ===== STEP: 대본 ===== -->
+  <section class="wiz-step" data-step="script">
+    <div class="phase-head">
+      <h1>대본을 다듬어요</h1>
+      <p>씬을 하나씩 다듬습니다. <b>"렌더하고 다음 씬 →"</b>을 누르면 이 씬이 백그라운드로 렌더되는 동안 화면은 다음 씬으로 넘어갑니다. 완성된 클립은 그 씬 카드에 바로 붙습니다.</p>
+    </div>
+    <div id="script-summary" class="summary"></div>
+    <div id="scene-rail" class="scene-rail"></div>
+    <div id="storyboard"></div>
+    <div class="wiz-nav">
+      <button class="btn btn-back" id="scene-prev">← 이전</button>
+      <span class="btn-row" style="margin:0">
+        <button id="btn-add-scene" class="btn btn-sm">+ 씬 추가</button>
+        <button id="btn-new-story" class="btn btn-sm">새 스토리</button>
+        <button id="scene-skip" class="btn btn-sm">그냥 다음 →</button>
+        <button id="scene-next" class="btn btn-primary">렌더하고 다음 씬 →</button>
+      </span>
+    </div>
+  </section>
+
+  <!-- ===== STEP: 완성 ===== -->
+  <section class="wiz-step" data-step="produce">
+    <div class="phase-head">
+      <h1>영상으로 만들어요</h1>
+      <p>씬별 영상을 렌더하고, 순서·전환·자막·음악을 편집해 하나로 조립합니다.</p>
+    </div>
+    <div id="produce-summary" class="summary"></div>
+    <details class="panel">
+      <summary>이전에 만든 스토리 불러오기</summary>
+      <div class="panel-body"><div id="story-list" class="import-list"></div></div>
+    </details>
+
+    <div id="produce-workspace" hidden>
+      <div class="section-label">씬 타임라인</div>
+      <div id="timeline"></div>
+      <div class="btn-row">
+        <button id="btn-render-all" class="btn btn-primary">전체 렌더</button>
+        <button id="btn-delete-story" class="btn btn-sm btn-danger">이 스토리 삭제</button>
+      </div>
+      <div id="produce-progress" class="progress"><span class="spinner"></span><span></span></div>
+
+      <div class="section-label">마무리 편집 <span class="mini-note">(영상에 얹는 요소 — 대사와 무관)</span></div>
+      <div class="finish-grid">
+        <label>시작 화면 문구<input id="story-intro" type="text" placeholder="비우면 없음 (예: 어느 오래된 친구 이야기)" /></label>
+        <label>끝 화면 문구<input id="story-outro" type="text" placeholder="비우면 없음 (예: — 끝 —)" /></label>
+        <label>배경 음악 파일<input id="story-music" type="file" accept="audio/*" /></label>
+        <label>음악 볼륨 <span id="music-gain-val">0.25</span><input id="story-music-gain" type="range" min="0" max="1" step="0.05" value="0.25" /></label>
+      </div>
+      <button id="btn-assemble" class="btn btn-primary">최종 영상 만들기 (편집 반영, GPU 없이 ~20초)</button>
+      <div id="final-result" class="result"></div>
+    </div>
+
+    <div class="wiz-nav">
+      <button class="btn btn-back" data-go="script">← 대본으로</button>
+      <span></span>
+    </div>
+  </section>
+
+</div>
+</main>
+
+<script src="/app.js?v=25" defer></script>
+<script src="/follow.js?v=59" defer></script>
+</body>
+</html>
