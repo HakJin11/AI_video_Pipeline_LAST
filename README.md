@@ -68,3 +68,13 @@ build.bat
 ```
 
 Python 3.11+ 표준 라이브러리만 씁니다 (클라이언트 창은 tkinter).
+
+## ComfyUI 워크플로 (`workflows/`)
+
+| 파일 | 용도 | 주요 모델 |
+|---|---|---|
+| `image_qwen_image_edit_2511 IMAGE.json` | 인물 사진 합성 (Qwen-Image-Edit 2511, 이미지 최대 3장 입력) | qwen_image_edit_2511_fp8mixed, qwen_2.5_vl_7b_fp8_scaled, Lightning 4steps LoRA |
+| `tts_voicecloneAUDIO.json` | 목소리 복제 TTS (Qwen3-TTS 1.7B, 한국어) | Qwen3-TTS-12Hz-1.7B-Base |
+| `video_ltx2_3_ia2v VIDEO LAST.json` | 사진 + 음성 → 립싱크 영상 (LTX-2.3 image+audio to video) | ltx-2.3-22b-dev-fp8, distilled LoRA, gemma_3_12B_it_fp4_mixed, spatial upscaler x2 |
+
+ComfyUI에서 파일을 끌어다 놓으면 열리고, 없는 모델은 Manager의 "Install Missing Models"로 받을 수 있습니다.
