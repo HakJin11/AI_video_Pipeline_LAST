@@ -2,22 +2,21 @@
 __pycache__/
 *.pyc
 .venv/
-udp/.buildenv/
-udp/build/
+.buildenv/
+build/
 *.log
 app_watchdog.lock
-udp/server/server_config.json
 server_config.json
+server/data/secrets.json
 
 # made while the app runs (videos, stills, voice takes, caches) -- not shared
-media/follow/
-media/voicelines/
-media/composites/
-media/videos/
-media/stories/
-media/motion_tests/
-data/backups/
+server/media/follow/
+server/media/voicelines/
+server/media/composites/
+server/media/videos/
+server/media/stories/
+server/media/motion_tests/
+server/data/backups/
 
 # ComfyUI install and models live outside this repo
 ComfyUI*/
-data/secrets.json

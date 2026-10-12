@@ -1,0 +1,5 @@
+{
+  "port": 9999,
+  "password": "change-this-password",
+  "app": "http://127.0.0.1:8010"
+}

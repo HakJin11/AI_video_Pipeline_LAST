@@ -3,6 +3,7 @@
 서버 PC의 IP·포트·비밀번호를 넣고 연결하면, 따라하기 영상을 고르고 만들기를 시작하고, 진행 상황을 보고,
 완성 영상(원본|AI 비교 또는 AI 결과)을 UDP로 받아 '다운로드\\AI영상_받은파일' 폴더에 저장한다.
 """
+import base64
 import hashlib
 import json
 import os
@@ -16,7 +17,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # proto.py sits next to this file
 import proto  # noqa: E402
 
 CONFIG = Path(os.environ.get("APPDATA", Path.home())) / "AIVideoClient" / "config.json"
@@ -78,7 +79,36 @@ class UdpClient:
 
     def download(self, run_id: int, kind: str, dest_dir: Path, progress=None) -> Path:
         info = self.request("file_info", wait=180, resend=5, run_id=run_id, kind=kind)
-        n, size, csize = info["chunks"], info["size"], info["chunk_size"]
+        data = self._fetch_chunks({"run_id": run_id, "kind": kind}, info["chunks"], info["size"], info["sha256"],
+                                  progress)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        path = dest_dir / info["name"]
+        path.write_bytes(data)
+        return path
+
+    # ------------------------------------------------------------------ 웹 화면 중계 (2026-10-12)
+    UPLOAD_PART = 30000  # bytes of a request body per datagram (base64 ~40 KB)
+
+    def http(self, method: str, path: str, content_type: str | None, body: bytes) -> tuple[int, dict, bytes]:
+        """One browser request to the server's web app, carried over UDP (see web_tunnel.py)."""
+        args = {"method": method, "path": path, "headers": {"Content-Type": content_type} if content_type else {}}
+        if body and len(body) > self.UPLOAD_PART:
+            uid = f"{random.getrandbits(64):016x}"
+            parts = [body[i:i + self.UPLOAD_PART] for i in range(0, len(body), self.UPLOAD_PART)]
+            for i, part in enumerate(parts):
+                self.request("upload_part", wait=60, resend=3, upload_id=uid, index=i, total=len(parts),
+                             data=base64.b64encode(part).decode("ascii"))
+            args["upload_id"] = uid
+        elif body:
+            args["body_b64"] = base64.b64encode(body).decode("ascii")
+        r = self.request("http", wait=900, resend=5, **args)
+        if "body_b64" in r:
+            data = base64.b64decode(r["body_b64"])
+        else:
+            data = self._fetch_chunks({"key": r["key"]}, r["chunks"], r["size"], r["sha256"])
+        return r["status"], r.get("headers") or {}, data
+
+    def _fetch_chunks(self, which: dict, n: int, size: int, sha256: str, progress=None) -> bytes:
         parts: dict[int, bytes] = {}
         s = self._socket()
         s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)
@@ -88,7 +118,7 @@ class UdpClient:
                 want = [i for i in range(n) if i not in parts][:window]
                 rid = self._next_id()
                 s.sendto(proto.encode({"v": proto.VERSION, "id": rid, "cmd": "chunks", "pw": self.password,
-                                       "run_id": run_id, "kind": kind, "idx": want}), self.addr)
+                                       **which, "idx": want}), self.addr)
                 got = 0
                 end = time.time() + 2.0
                 # first chunk may take a moment; after that a 0.3 s gap means the rest of this burst was lost
@@ -124,12 +154,9 @@ class UdpClient:
         finally:
             s.close()
         data = b"".join(parts[i] for i in range(n))[:size]
-        if hashlib.sha256(data).hexdigest() != info["sha256"]:
+        if hashlib.sha256(data).hexdigest() != sha256:
             raise UdpError("받은 파일이 손상됐어요. 다시 받아 주세요")
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        path = dest_dir / info["name"]
-        path.write_bytes(data)
-        return path
+        return data
 
 
 def local_time(iso: str | None) -> str:
@@ -152,7 +179,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("AI 영상 파이프라인 - UDP 클라이언트")
-        self.geometry("760x620")
+        self.geometry("780x720")
         self.minsize(680, 560)
         self.client: UdpClient | None = None
         self.catalog: list[dict] = []
@@ -220,6 +247,17 @@ class App(tk.Tk):
         ttk.Button(row, text="받은 폴더 열기", command=self.open_folder).pack(side="left", padx=3)
         self.dl_label = ttk.Label(st, text="")
         self.dl_label.pack(fill="x", padx=6, pady=2)
+
+        web = ttk.LabelFrame(self, text="5. 웹 화면 — 배경·인물·목소리·컷마다 대사/동작/말투/프롬프트까지 모든 설정")
+        web.pack(fill="x", **pad)
+        wrow = ttk.Frame(web)
+        wrow.pack(fill="x", padx=6, pady=6)
+        ttk.Button(wrow, text="🌐 웹 화면 열기", command=lambda: self.open_web("/")).pack(side="left", padx=3)
+        ttk.Button(wrow, text="🔧 관리자 화면 열기 (새 영상 가져오기)",
+                   command=lambda: self.open_web("/?admin=1")).pack(side="left", padx=3)
+        self.web_label = ttk.Label(web, text="서버의 화면을 이 PC 브라우저로 엽니다 (통신은 UDP, 이 창을 닫으면 끊겨요)",
+                                   foreground="#555")
+        self.web_label.pack(fill="x", padx=6, pady=(0, 6))
 
     # ------------------------------------------------------------------ helpers
     def _load_config(self):
@@ -417,6 +455,26 @@ class App(tk.Tk):
                 pass
         self._bg(lambda: self.client.download(rid, kind, SAVE_DIR, prog), done,
                  lambda m: (self.dl_label.config(text=f"받기 실패: {m}"), self._error(m)))
+
+    def open_web(self, path: str):
+        """Start the local relay (web_tunnel) for the connected server and open the browser on it."""
+        if not self._need():
+            return
+        import webbrowser
+        import web_tunnel
+        if getattr(self, "_tunnel_for", None) is not self.client:
+            if getattr(self, "_tunnel", None):
+                self._tunnel.shutdown()
+            try:
+                self._tunnel, self._tunnel_port = web_tunnel.start(self.client)
+            except OSError as e:
+                self._error(str(e))
+                return
+            self._tunnel_for = self.client
+        url = f"http://127.0.0.1:{self._tunnel_port}{path}"
+        self.web_label.config(text=f"열었어요: {url}  (서버 {self.client.addr[0]} 와 UDP로 연결 · 이 창을 닫으면 끊겨요)",
+                              foreground="#080")
+        webbrowser.open(url)
 
     def open_folder(self):
         SAVE_DIR.mkdir(parents=True, exist_ok=True)

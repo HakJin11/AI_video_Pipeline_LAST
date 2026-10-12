@@ -1,13 +1,15 @@
 """AI 영상 파이프라인 UDP 서버.
 
-ComfyUI와 영상 앱(FastAPI, 기본 http://127.0.0.1:8010)이 돌아가는 PC에서 실행한다. 다른 PC의 클라이언트가 UDP로
-보내는 명령을 받아 로컬 앱의 HTTP API로 전달하고, 완성 영상은 조각으로 나눠 UDP로 돌려준다.
+ComfyUI와 영상 앱(FastAPI, 기본 http://127.0.0.1:8010)이 돌아가는 서버 PC에서 실행한다. 다른 PC의 클라이언트가 UDP로
+보내는 명령을 받아 로컬 앱의 HTTP API로 전달하고, 완성 영상은 조각으로 나눠 UDP로 돌려준다. 클라이언트의
+"웹 화면 열기"는 앱의 웹 화면 전체(모든 설정)를 UDP로 중계한다 (cmd_http).
 
     AIVideoServer.exe [--port 9999] [--app http://127.0.0.1:8010] [--password 비밀번호]
 
 설정은 실행 파일 옆의 server_config.json 으로도 줄 수 있다: {"port": 9999, "password": "...", "app": "..."}
 """
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -17,9 +19,10 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # proto.py sits next to this file
 import proto  # noqa: E402
 
 ACTIVE = ("queued", "rendering")
@@ -97,6 +100,7 @@ class Server:
         self.replies: dict[tuple, tuple[float, bytes]] = {}  # (addr, id) -> (time, answer): retries get the same answer
         self.files: dict[tuple, dict] = {}  # (run, kind) -> {"data", "sha256", "url", "at"}
         self.inflight: set[tuple] = set()  # (addr, id) being worked on right now
+        self.uploads: dict[str, dict] = {}  # upload id -> {"parts": {i: bytes}, "total", "at"} (big request bodies)
         self.lock = threading.Lock()
 
     # ------------------------------------------------------------------ commands
@@ -167,10 +171,66 @@ class Server:
         return {"size": size, "chunk_size": proto.CHUNK_SIZE, "chunks": (size + proto.CHUNK_SIZE - 1) // proto.CHUNK_SIZE,
                 "sha256": f["sha256"], "name": f"run{rid}_{kind}_{Path(url).name}"}
 
-    def send_chunks(self, m, addr):
-        rid, kind = int(m["run_id"]), m.get("kind", "compare")
+    # ------------------------------------------------------------------ 웹 화면 전체 (2026-10-12)
+    # The client PC opens the app's whole web screen in its own browser; its local relay sends every browser request
+    # here as one "http" command (big bodies first as upload_part pieces) and gets the answer back the same way as a
+    # video: small answers inline, big ones as chunks. Everything stays UDP.
+    HTTP_INLINE = 30000
+
+    def cmd_upload_part(self, m):
+        uid = str(m["upload_id"])
         with self.lock:
-            f = self.files.get((rid, kind))
+            u = self.uploads.setdefault(uid, {"parts": {}, "total": int(m["total"]), "at": time.time()})
+            u["parts"][int(m["index"])] = base64.b64decode(m["data"])
+            u["at"] = time.time()
+            return {"have": len(u["parts"]), "total": u["total"]}
+
+    def cmd_http(self, m):
+        method = str(m.get("method", "GET")).upper()
+        path = str(m.get("path", "/"))
+        if not path.startswith("/") or ".." in path.split("?")[0]:
+            raise RuntimeError("잘못된 경로")
+        body = None
+        if m.get("upload_id"):
+            with self.lock:
+                u = self.uploads.pop(str(m["upload_id"]), None)
+            if not u or len(u["parts"]) != u["total"]:
+                raise RuntimeError("올린 데이터가 다 도착하지 않았어요. 다시 시도해 주세요")
+            body = b"".join(u["parts"][i] for i in range(u["total"]))
+        elif m.get("body_b64"):
+            body = base64.b64decode(m["body_b64"])
+        elif method in ("POST", "PUT", "PATCH"):
+            body = b""
+        headers = {k: v for k, v in (m.get("headers") or {}).items()
+                   if k.lower() in ("content-type", "accept")}
+        req = urllib.request.Request(self.api.url + path, data=body, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=900) as r:
+                status, data, hdrs = r.status, r.read(), r.headers
+        except urllib.error.HTTPError as e:
+            status, data, hdrs = e.code, e.read(), e.headers
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"영상 앱({self.api.url})에 연결할 수 없어요: {e.reason}") from None
+        except OSError as e:  # the app dropped the connection (e.g. an unknown upload route)
+            raise RuntimeError(f"영상 앱이 요청을 끊었어요 ({method} {path.split('?')[0]}): {e}") from None
+        out = {"status": status, "size": len(data),
+               "headers": {k: hdrs[k] for k in ("Content-Type", "Cache-Control", "Content-Disposition") if hdrs.get(k)}}
+        if len(data) <= self.HTTP_INLINE:
+            out["body_b64"] = base64.b64encode(data).decode("ascii")
+            return out
+        token = uuid.uuid4().hex
+        with self.lock:
+            self.files[("http", token)] = {"data": data, "sha256": hashlib.sha256(data).hexdigest(), "url": path,
+                                           "at": time.time()}
+        out.update(key=token, chunk_size=proto.CHUNK_SIZE, chunks=(len(data) + proto.CHUNK_SIZE - 1) // proto.CHUNK_SIZE,
+                   sha256=hashlib.sha256(data).hexdigest())
+        return out
+
+    def send_chunks(self, m, addr):
+        # a finished video (run_id + kind) or a big web-screen answer (key, see cmd_http)
+        fkey = ("http", str(m["key"])) if m.get("key") else (int(m["run_id"]), m.get("kind", "compare"))
+        with self.lock:
+            f = self.files.get(fkey)
         if not f:
             self.reply(addr, {"id": m.get("id"), "ok": False, "error": "file_info를 먼저 요청하세요"})
             return
@@ -223,7 +283,9 @@ class Server:
 
     def _run(self, m: dict, cmd: str, key: tuple, addr) -> None:
         rid = m.get("id")
-        if cmd != "status":  # status comes every few seconds while a video is made
+        if cmd == "http" and (m.get("method", "GET") != "GET" or not str(m.get("path", "")).startswith(("/api/follow/", "/media/", "/api/health"))):
+            log(f"{addr[0]}:{addr[1]} -> 웹 {m.get('method')} {str(m.get('path'))[:80]}")
+        elif cmd not in ("status", "http", "upload_part"):  # status / web polling come every few seconds
             log(f"{addr[0]}:{addr[1]} -> {cmd} {({k: v for k, v in m.items() if k not in ('v', 'id', 'cmd', 'pw')})}")
         fn = getattr(self, f"cmd_{cmd}", None)
         try:
@@ -248,8 +310,10 @@ class Server:
             with self.lock:
                 for k in [k for k, (t, _) in self.replies.items() if now - t > 300]:
                     del self.replies[k]
-                for k in [k for k, f in self.files.items() if now - f["at"] > 600]:
+                for k in [k for k, f in self.files.items() if now - f["at"] > (120 if k[0] == "http" else 600)]:
                     del self.files[k]
+                for k in [k for k, u in self.uploads.items() if now - u["at"] > 300]:
+                    del self.uploads[k]
 
     def serve(self) -> None:
         threading.Thread(target=self.cleanup, daemon=True).start()
